@@ -1,4 +1,6 @@
 python-morgue
 =============
 
-Search for dead code in a project
+Given a list of directories look for function definitions that are never called in the directory.
+
+  $ morgue.py ~/Repos/project
