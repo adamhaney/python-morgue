@@ -9,62 +9,78 @@ import os
 import sys
 import ast
 
+from ast import NodeVisitor
+
 
 def python_files(path):
     """
     Generate all python files in a given directory
     """
     for dirpath, dirname, filenames in os.walk(path):
-        python_files = [f for f in filenames if ".py" in f]
-        for pyf in python_files:
-            yield dirpath, dirname, pyf
+        for f in filenames:
+            fullpath = os.path.join(dirpath, f)
+            if fullpath.endswith(".py"):
+                yield fullpath
 
 
-def python_files_with_contents(path):
-    for dirpath, dirname, pyf in python_files(path):
-        try:
-            pyf_contents = open(os.path.join(dirpath, pyf)).read()
-            yield dirpath, dirname, pyf, pyf_contents
-        except IOError:
-            continue
+class UsageAnalyzer(NodeVisitor):
+    """
+    Keep track of which functions and methods are being called on
+    which objects and from which modules
 
-def parseable_python_nodes(path):
-    for dirpath, dirname, pyf, pyf_contents in python_files_with_contents(path):
-        try:
-            print dirpath
-            file_node = ast.parse(pyf_contents)
-            yield dirpath, dirname, pyf, pyf_contents, file_node
-        except SyntaxError:
-            # Couldn't parse the file
-            pass
-        except TypeError:
-            # The file was empty
-            pass
+    NOTE: Currently we just look for function names that are never
+    invoked anywhere this ignores the fact that two functions in
+    different modules or classes both get credit for being called if
+    any call object references their name. BUT, this helps us get
+    around inheritence, meta class issues, the whole 9.
+    """
+    def __init__(self, *args, **kwargs):
+        self.called_function_names = set()
+        self.defined_function_names = set()
+
+        return super(UsageAnalyzer, self).__init__(*args, **kwargs)
+
+    def visit_Call(self, node, *args, **kwargs):
+        def get_name(node):
+            # function calls
+            if hasattr(node.func, 'id'):
+                return node.func.id, node.func.ctx
+
+            # method calls
+            if hasattr(node.func, 'value'):
+                return node.func.attr, node.func.ctx
+
+            if hasattr(node.func, 'func'):
+                return get_name(node.func)
+
+        name, ctx = get_name(node)
+        self.called_function_names.add(name)
+
+        self.generic_visit(node, *args, **kwargs)
+
+    def visit_ImportFrom(self, node, *args, **kwargs):
+        self.generic_visit(node, *args, **kwargs)
+
+    def visit_FunctionDef(self, node, *args, **kwargs):
+        self.defined_function_names.add(node.name)
+
+        self.generic_visit(node, *args, **kwargs)
+
+    def find_dead(self):
+        return self.defined_function_names - self.called_function_names
 
 
-def main(path):
-    definitions = {}
+def main(paths):
+    usage_analyzer = UsageAnalyzer()
+    for path in paths:
+        for f in python_files(path):
+            tree = ast.parse(open(f).read(), f)
+            usage_analyzer.visit(tree)
+            #print ast.dump(tree)
 
-    for dirpath, dirname, pyf, pyf_contents, file_node in parseable_python_nodes(path):
-
-        for node in ast.walk(file_node):
-            if type(node) == ast.FunctionDef:
-                # Create an occurence count of 0
-                definitions[node.name] = 0
-
-
-    for dirpath, dirname, pyf, pyf_contents, file_node in parseable_python_nodes(path):
-
-        for node in ast.walk(file_node):
-            if type(node) == ast.Call:
-                #print dir(node)
-                print dir(node)
-                print dir(node.func)
-                print node.func
-                print dir(node.func.ctx)
-                print node.func.id
-                exit()
+    for dead in usage_analyzer.find_dead():
+        print dead
 
 
 if "__main__" == __name__:
-    main(sys.argv[1])
+    main(sys.argv[1:])
